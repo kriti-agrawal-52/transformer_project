@@ -59,9 +59,7 @@ class PreprocessingTraining():
         return train_text, val_text, test_text
 
     def get_batch_indices(self, split:'train'):
-        torch.manual_seed(1337)
         data = {'train': self.train_text, 'validation': self.val_text, 'test': self.test_text}[split]
-        # we are seeding our torch random generator so that when we reproduce or rerurn this code, we always get same random numbers
         batch_indices = torch.randint(0, len(data)-self.Time, (self.Batch,))
         # we are generating 4 random indices which can be any integers between 0 and len(data)-block_size which is Time
         return batch_indices
@@ -328,7 +326,9 @@ if __name__ == '__main__':
         with open('input.txt', 'r') as f:
             raw_text = f.read()
         logger.info("Successfully loaded input.txt")
-    
+        
+        torch.seed(1337) # we are seeding our torch random generator so that when we reproduce or rerurn this code, we always get same random numbers
+       
         # Initialize preprocessing and model
         prep = PreprocessingTraining(raw_text)
         model = BigramModel(prep.vocab_size)
