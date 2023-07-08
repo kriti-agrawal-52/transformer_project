@@ -58,13 +58,13 @@ class PreprocessingTraining():
 
         return train_text, val_text, test_text
 
-    def get_batch_indices(self, split:'train'):
+    def get_batch_indices(self, split='train'):
         data = {'train': self.train_text, 'validation': self.val_text, 'test': self.test_text}[split]
         batch_indices = torch.randint(0, len(data)-self.Time, (self.Batch,))
         # we are generating 4 random indices which can be any integers between 0 and len(data)-block_size which is Time
         return batch_indices
 
-    def get_batch(self, split: 'train'):
+    def get_batch(self, split= 'train'):
         batch_indices = self.get_batch_indices(split)
         data = {
             'train': self.train_text,
