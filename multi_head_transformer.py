@@ -488,5 +488,21 @@ if __name__ == '__main__':
         logger.critical(f"Runtime error (possibly tensor mismatch or CUDA error): {e}")
     except Exception as e:
         logger.critical(f"Unhandled error in driver training code: {e}")
+        
+    # == Optional: Hyperparameter Search Execution ==
+    try:
+        should_tune = True
+        if should_tune:
+            lrs = [1e-2, 5e-3]
+            batch_sizes = [4, 8]
+            time_steps = [8, 16]
+            tuning_results = hyperparameter_search(raw_text, lrs, batch_sizes, time_steps)
+
+            sorted_results = sorted(tuning_results, key=lambda x: x['val_loss'])
+            print("\nTop 3 Hyperparameter Configurations:")
+            for config in sorted_results[:3]:
+                print(config)
+    except Exception as e:
+        logger.critical(f"Unhandled error during hyperparameter tuning: {e}")
 
         
