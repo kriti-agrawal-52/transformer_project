@@ -207,7 +207,7 @@ class MultiHeadAttention(nn.Module):
     
 # === Preprocessing Class ===
 class PreprocessingTraining():
-    def __init__(self, text, batch_size=4, time_steps=8):
+    def __init__(self, text, batch_size=8, time_steps=16):
         self.text = text
         self.dataset_size = len(text)
         self.vocab = sorted(set(text))
@@ -331,9 +331,9 @@ class TransformerModel(nn.Module):
                 _, loss = self(xb, yb)
                 losses.append(loss.item())
         self.train()
-        return losses
+        return sum(losses) / len(losses)
     
-    def train_loop(self, get_batch_fn, prep, steps=1000, val_check_every=20, patience=6, min_delta=1e-4, lr=1e-3):
+    def train_loop(self, get_batch_fn, prep, steps=1000, val_check_every=20, patience=6, min_delta=1e-4, lr=5e-3):
         """
         Training loop with early stopping, validation checks, and plotting.
         """
@@ -356,7 +356,7 @@ class TransformerModel(nn.Module):
             train_losses.append(loss.item())
 
             if step % val_check_every == 0:
-                val_loss = sum(self.evaluate_validation_loss(get_batch_fn)) / eval_iters
+                val_loss = self.evaluate_validation_loss(get_batch_fn)
                 val_loss_dict[step] = val_loss
 
                 print(f"[Step {step}] Train Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}")
@@ -427,11 +427,11 @@ def hyperparameter_search(raw_text, lrs=[1e-2], batch_sizes=[4], time_steps=[8])
                     logger.info(f"Starting Tuning run: Batch Size: {bs}, Context Window: {ts}, Learning Rate: {lr}")
 
                     prep = PreprocessingTraining(raw_text, batch_size=bs, time_steps=ts)
-                    model = TransformerModel(prep.vocab_size, context_window=ts, channel_dim=32, num_heads=4)
+                    model = TransformerModel(prep.vocab_size, context_window=ts, channel_dim=64, num_heads=8)
 
                     model.train_loop(prep.get_batch, prep, steps=1000, val_check_every=20, patience=6, lr=lr)
 
-                    val_loss = sum(model.evaluate_validation_loss(prep.get_batch)) / 20
+                    val_loss = model.evaluate_validation_loss(prep.get_batch)
                     results.append({
                         'batch_size': bs,
                         'time_steps': ts,
@@ -473,7 +473,7 @@ if __name__ == '__main__':
         print(f"Test set loss: {test_loss:.4f}")
         logger.info(f"Test set loss: {test_loss:.4f}")
 
-        prompt = 'Th'
+        prompt = 'Macbeth ha'
         input_ids = torch.tensor([prep.encoding(prompt)])
         generated_ids = model.generate(input_ids, 100)
         print("\nGenerated Text:\n" + prep.decoding(generated_ids[0].tolist()))
@@ -491,7 +491,7 @@ if __name__ == '__main__':
         
     # == Optional: Hyperparameter Search Execution ==
     try:
-        should_tune = True
+        should_tune = False
         if should_tune:
             lrs = [1e-2, 5e-3]
             batch_sizes = [4, 8]
