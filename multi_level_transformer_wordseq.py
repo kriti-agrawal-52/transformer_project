@@ -87,6 +87,9 @@ class MultiHeadAttention(nn.Module):
         # === Step 5: Combine heads ===
         # Reshape: (B, H, T, D) → (B, T, H*D = C)
         out = attn_output.transpose(1, 2).contiguous().view(B, T, C)
+        #attn_output first is transposed, ie dimensions at index 1 and 2 are swapped (H & T), so shape after transpose : (B, T, H, D)
+        # after transpose, the tensor's memory layout might become non-contigouous, elements that are logically adjacent in the new shape might not be physically adjacent in memory
+        # required because view pytorch operation requires tensor to be contiguous, otherwise we will get runtime error
 
         # Final output projection
         return self.out_proj(out)
@@ -101,11 +104,11 @@ class PreprocessingTraining():
         
         logger.info("Tokenizing the entire dataset...")
         
-        self.all_token_ids = self.tokenizer.encode(self.text)
+        self.all_token_ids = self.tokenizer.encode(self.text) # it tokeizes and encodes are input text, so even repeated tokens such as hello hello would be encoded separately.
         logger.info(f"Tokenization complete. Total tokens: {len(self.all_token_ids)}")
         
         # KEY CHANGE: Get vocab size from the tokenizer
-        self.vocab_size = self.tokenizer.vocab_size
+        self.vocab_size = self.tokenizer.vocab_size # vocab_size is an attribute of tokenizer object
         logger.info(f"Vocabulary size: {self.vocab_size}")
         
         # KEY CHANGE: Split tokenized data
@@ -116,7 +119,7 @@ class PreprocessingTraining():
         Splits `self.all_token_ids` into train, validation, and test sets (as tensors).
         The logic mirrors the original script's 81% train, 9% val, 10% test split.
         """
-        n_tokens = len(self.all_token_ids)
+        n_tokens = len(self.all_token_ids) # number of tokens in the input text
         
         # Determine split point for test data (10% for test)
         train_val_idx_end = int(n_tokens * train_val_ratio) # First 90% for train+val
@@ -173,6 +176,14 @@ class PreprocessingTraining():
         ix = torch.randint(0, max_start_idx + 1, (self.batch_size,))
 
         # Create input sequences (x) and target sequences (y) from token IDs.
+        # We are creating batches such as this because we are doing self-attention training with masking.
+        # Example:
+        # If x sequence is: ['twinkle', 'twinkle', 'little', 'star']
+        # The model's task for each position (due to causal masking) is:
+        # - given 'twinkle', predict 'twinkle'
+        # - given 'twinkle twinkle', predict 'little'
+        # - given 'twinkle twinkle little', predict 'star'
+        # - given 'twinkle twinkle little star', predict ',' (or whatever the next token in the full text is)
         x = torch.stack([data_tokens[i : i + self.time_steps] for i in ix])
         y = torch.stack([data_tokens[i + 1 : i + self.time_steps + 1] for i in ix])
         
@@ -182,18 +193,23 @@ class PreprocessingTraining():
 class TransformerBlock(nn.Module):
     def __init__(self, channel_dim, num_heads, context_window):
         super().__init__()
-        self.ln1 = nn.LayerNorm(channel_dim)
+        self.ln1 = nn.LayerNorm(channel_dim) # input to attention heads is normalised
         self.attn = MultiHeadAttention(channel_dim, num_heads, context_window)
-        self.ln2 = nn.LayerNorm(channel_dim)
+        self.ln2 = nn.LayerNorm(channel_dim) # input to feed forward network is normalised 
         self.ffn = nn.Sequential(
             nn.Linear(channel_dim, 4 * channel_dim),
             nn.ReLU(),  # or GELU for GPT-style
             nn.Linear(4 * channel_dim, channel_dim)
         )
+        # This FFN expands the token's features to a higher dimension, applies non-linearity, and then projects them back to the original dimension to enhance representation.
+
 
     def forward(self, x):
         # Attention with residual
         x = x + self.attn(self.ln1(x))
+        # This line passes the data through attention, then adds the result back to the original input (x).
+        # This 'skip connection' helps the model train deeper by allowing information and gradients to flow more easily.
+        
         # Feedforward with residual
         x = x + self.ffn(self.ln2(x))
         return x
@@ -379,17 +395,24 @@ class TransformerModel(nn.Module):
 
             if temperature > 0: # temperature=0 can lead to issues with multinomial if not handled
                  last_logits = last_logits / temperature
+            # Temperature > 1 (e.g., 2.0): Dividing the logits by a value greater than 1 makes the logits smaller (closer to zero). When these smaller logits are passed through the softmax function, the resulting probability distribution becomes smoother and more uniform. This means more tokens will have similar (non-zero) probabilities, leading to more diverse and potentially more "creative" or "random" output.
+            # Temperature = 1.0: This is the default or "no change" setting. The logits are used as they are.
+            # Temperature < 1 (e.g., 0.5): Dividing the logits by a value less than 1 (e.g., 0.5 is equivalent to multiplying by 2) makes the logits larger (more extreme). When these more extreme logits are passed through softmax, the probability distribution becomes sharper, concentrating most of the probability mass on the few most likely tokens. This leads to less diverse and more "deterministic" or "conservative" output.
             
             if top_k is not None and top_k > 0:
-                v, _ = torch.topk(last_logits, min(top_k, last_logits.size(-1)))
-                last_logits[last_logits < v[:, [-1]]] = -float('Inf') # Apply top-k filtering
+                v, _ = torch.topk(last_logits, min(top_k, last_logits.size(-1))) # identifies the top_k highest logit values (v) and their indices for each sequence in the batch. min(top_k, last_logits.size(-1)) ensures you don't ask for more k values than are available in the vocabulary.
+                last_logits[last_logits < v[:, [-1]]] = -float('Inf') # v[:, [-1]]: This specifically extracts the k-th highest logit value.
+                # Any logit value that is smaller than the k-th highest logit is set to negative infinity (-float('Inf')).
             
-            probs = F.softmax(last_logits, dim=-1)
+            probs = F.softmax(last_logits, dim=-1) # When softmax is applied, -float('Inf') becomes 0 probability.
+            
+            # top_k effectively zeroes out the probabilities of all tokens except for the k most probable ones. This restricts the sampling pool to only the most plausible next tokens.
             
             # Sample next token
             # Avoid issues with temperature=0 if it results in all zeros after softmax (unlikely with top_k)
             if temperature == 0: # Deterministic: take the most probable token
                 next_token = torch.argmax(probs, dim=-1, keepdim=True)
+                # Temperature = 0: This is a special case handled by your code (if temperature == 0: next_token = torch.argmax(probs, dim=-1, keepdim=True)). It effectively means deterministic sampling, where the model always picks the token with the absolute highest logit (and thus highest probability after softmax).
             else:
                 next_token = torch.multinomial(probs, num_samples=1)
             
