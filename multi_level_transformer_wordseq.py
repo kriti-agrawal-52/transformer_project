@@ -93,11 +93,11 @@ class MultiHeadAttention(nn.Module):
     
 # === Preprocessing Class ===
 class PreprocessingTraining():
-    def __init__(self, text, batch_size=4, time_steps=64):
+    def __init__(self, text, tokenizer, batch_size=4, time_steps=64):
         self.text = text
         self.tokenizer = tokenizer
-        self.batch = batch_size
-        self.time = time_steps
+        self.batch_size = batch_size
+        self.time_steps = time_steps
         
         logger.info("Tokenizing the entire dataset...")
         
@@ -110,8 +110,6 @@ class PreprocessingTraining():
         
         # KEY CHANGE: Split tokenized data
         self._split_tokenized_data() # New method to split token IDs
-
-        self.train_text, self.val_text, self.test_text = self.train_test_validation_split()
     
     def _split_tokenized_data(self, train_val_ratio=0.9, val_ratio_of_train_val=0.1):
         """
@@ -262,16 +260,21 @@ class TransformerModel(nn.Module):
         return logits, loss
     
     @torch.no_grad()
-    def evaluate_validation_loss(self, prep_obj, eval_iters=20):
+    def evaluate_validation_loss(self, prep_obj, split = 'validation', eval_iters=20):
         """
         Computes average validation loss over `eval_iters` mini-batches.
         """
         self.eval()
         losses = []
         for _ in range(eval_iters):
-            xb, yb = prep_obj.get_batch('validation')
-            _, loss = self(xb, yb)
-            losses.append(loss.item())
+            try:
+                xb, yb = prep_obj.get_batch(split)
+                xb, yb = xb.to(DEVICE), yb.to(DEVICE) # Move batch to DEVICE
+                _, loss = self(xb, yb)
+                losses.append(loss.item())
+            except ValueError as e: # Catch errors if a split is too small for a batch
+                logger.warning(f"Skipping a batch for split '{split}' during evaluation due to: {e}")
+                continue 
         self.train()
         
         return sum(losses) / len(losses) if losses else float('nan')
@@ -303,7 +306,7 @@ class TransformerModel(nn.Module):
             train_losses.append(loss.item())
 
             if step % val_check_every == 0 or step == steps: # Also check at the very last step
-                val_loss = self.evaluate_validation_loss(prep_obj, eval_iters=20) # Pass prep_obj
+                val_loss = self.evaluate_validation_loss(prep_obj,split = 'validation', eval_iters=20) # Pass prep_obj
                 val_loss_dict[step] = val_loss
 
                 logger.info(f"[Step {step}/{steps}] Train Loss: {loss.item():.4f}, Val Loss: {val_loss:.4f}")
@@ -392,50 +395,35 @@ class TransformerModel(nn.Module):
             
             input_ids = torch.cat((input_ids, next_token), dim=1)
         return input_ids
-    
-    def generate(self, input_ids, max_tokens_ahead = 100):
-        """
-        Autoregressively generate new tokens, starting from input_ids.
 
-        input_ids: tensor of shape (B, T') where T' ≤ context_window
-        Returns: tensor of shape (B, T' + max_tokens_ahead)
-        """
-        for _ in range(max_tokens_ahead):
-            # Truncate to the last `context_window` tokens if too long
-            input_condensed = input_ids[:, -self.context_window:] # shape (B, T)
-            
-            # get logits from the model
-            logits, _ = self.forward(input_condensed)
-            
-            # Take logits of last position only (last token generated)
-            last_logits = logits[:, -1, :]  # (B, vocab_size)
-            
-            # Convert logits to probability distribution
-            probs = F.softmax(last_logits, dim=-1)  # (B, vocab_size)
-            
-            # Sample next token from the distribution
-            next_token = torch.multinomial(probs, num_samples=1)  # (B, 1)
-            
-            # Append sampled token to input_ids
-            input_ids = torch.cat((input_ids, next_token), dim=1)  # shape grows each step
-        return input_ids
-
-# === Hyperparameter Search ===
-def hyperparameter_search(raw_text, lrs=[1e-2], batch_sizes=[4], time_steps=[8]):
+# === Hyperparameter Search (Modified to accept tokenizer) ===
+def hyperparameter_search(raw_text, tokenizer, lrs=[1e-2], batch_sizes=[4], time_steps_list=[8]): # Renamed time_steps to time_steps_list
     results = []
+    base_model_params = {'num_heads': 8, 'num_layers': 6, 'channel_dim': 64} # Example base params
+
     for bs in batch_sizes:
-        for ts in time_steps:
+        for ts in time_steps_list: # Use new name
             for lr in lrs:
                 try:
                     print(f"Tuning run: Batch Size: {bs}, Context Window: {ts}, Learning Rate: {lr}")
                     logger.info(f"Starting Tuning run: Batch Size: {bs}, Context Window: {ts}, Learning Rate: {lr}")
 
-                    prep = PreprocessingTraining(raw_text, batch_size=bs, time_steps=ts)
-                    model = TransformerModel(prep.vocab_size, context_window=ts, channel_dim=64, num_heads=8)
+                    # KEY CHANGE: Pass tokenizer to PreprocessingTraining
+                    prep = PreprocessingTraining(raw_text, tokenizer=tokenizer, batch_size=bs, time_steps=ts)
+                    
+                    # Ensure vocab_size and context_window are correctly passed from prep object
+                    model = TransformerModel(
+                        vocab_size=prep.vocab_size, 
+                        context_window=prep.time_steps, # Use prep.time_steps
+                        channel_dim=base_model_params['channel_dim'], # Use defined channel_dim
+                        num_heads=base_model_params['num_heads'],
+                        num_layers=base_model_params['num_layers']
+                    ).to(DEVICE) # Move model to device
 
-                    model.train_loop(prep.get_batch, prep, steps=1000, val_check_every=20, patience=6, lr=lr)
+                    # Pass prep object to train_loop and evaluate_validation_loss
+                    model.train_loop(prep, steps=1000, val_check_every=20, patience=6, lr=lr) # Reduced steps for tuning
 
-                    val_loss = model.evaluate_validation_loss(prep.get_batch)
+                    val_loss = model.evaluate_validation_loss(prep, split = 'validation') # Pass prep object
                     results.append({
                         'batch_size': bs,
                         'time_steps': ts,
@@ -444,70 +432,173 @@ def hyperparameter_search(raw_text, lrs=[1e-2], batch_sizes=[4], time_steps=[8])
                     })
                     logger.info(f"Completed run: bs={bs}, ts={ts}, lr={lr}, val_loss={val_loss:.4f}")
                 except Exception as e:
-                    logger.error(f"Error in tuning run (bs={bs}, ts={ts}, lr={lr}): {e}")
+                    logger.error(f"Error in tuning run (bs={bs}, ts={ts}, lr={lr}): {e}", exc_info=True)
     return results
 
-# === Main Execution ===
 if __name__ == '__main__':
     try:
-        with open('input.txt', 'r') as f:
+        input_file_path = 'input.txt' # For TinyShakespeare dataset
+        if not os.path.exists(input_file_path):
+            logger.critical(f"{input_file_path} (for TinyShakespeare) not found. Please ensure the dataset file exists.")
+            print(f"CRITICAL ERROR: {input_file_path} (for TinyShakespeare) not found. Please place your dataset in this file.")
+            exit()
+
+        with open(input_file_path, 'r', encoding='utf-8') as f:
             raw_text = f.read()
-        logger.info("Successfully loaded input.txt")
+        logger.info(f"Successfully loaded {input_file_path}")
 
         torch.manual_seed(1337)
-        tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
-        prep = PreprocessingTraining(raw_text, tokenizer = tokenizer)
-        model = TransformerModel(prep.vocab_size, context_window=prep.time, channel_dim=128, num_heads=8, num_layers=6)
+        # --- Tokenizer Initialization ---
+        tokenizer_name = "gpt2"
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token 
+                logger.info(f"Set tokenizer.pad_token to tokenizer.eos_token ({tokenizer.eos_token})")
+        except Exception as e:
+            logger.critical(f"Could not load tokenizer '{tokenizer_name}'. Error: {e}", exc_info=True)
+            print(f"Error: Could not load tokenizer '{tokenizer_name}'. Ensure internet access or cached tokenizer.")
+            exit()
+        
+        # --- Hyperparameters ---
+        batch_s = 16      # Batch size
+        time_s = 64       # Context window (sequence length)
+        channel_d = 128   # Embedding dimension
+        num_h = 8         # Number of attention heads
+        num_l = 6         # Number of transformer layers
+        learning_r = 5e-4 # Learning rate (adjusted from 5e-3, often 3e-4 to 5e-4 is good for Adam)
+        training_steps = 2000
+        val_check = 100    # Validate every N steps
+        train_patience = 5 # Early stopping patience
 
-        xb, yb = prep.get_batch("train")
-        _, loss_before = model(xb, yb)
-        print(f"Initial loss should be ideally ~4.17 before training. Loss before training: {loss_before.item():.4f}")
-        logger.info(f"Initial loss before training: {loss_before:.4f}")
+        # --- Preprocessing ---
+        prep = PreprocessingTraining(raw_text, tokenizer = tokenizer, batch_size=batch_s, time_steps=time_s)
+        
+        # --- Model Initialization ---
+        model = TransformerModel(
+            vocab_size=prep.vocab_size, 
+            channel_dim=channel_d, 
+            context_window=prep.time_steps, # Use time_steps from prep object
+            num_heads=num_h, 
+            num_layers=num_l
+        ).to(DEVICE)
+        logger.info(f"Model initialized with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters on {DEVICE}.")
 
+        # --- Initial Loss Check ---
+        try:
+            xb, yb = prep.get_batch("train")
+            xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+            expected_initial_loss = torch.log(torch.tensor(prep.vocab_size, dtype=torch.float)).item()
+            _, loss_before = model(xb, yb)
+            logger.info(f"Initial loss before training: {loss_before.item():.4f} (Expected for random ~{expected_initial_loss:.2f})")
+            print(f"Initial loss before training: {loss_before.item():.4f} (Expected for random ~{expected_initial_loss:.2f})")
+        except Exception as e:
+            logger.error(f"Could not perform initial loss check: {e}", exc_info=True)
+
+
+        # --- Training ---
         should_train = True
         if should_train:
-            model.train_loop(prep.get_batch, prep, steps=2000, val_check_every=50, patience=4)
+            logger.info("Starting training...")
+            model.train_loop(prep, steps=training_steps, val_check_every=val_check, patience=train_patience, lr=learning_r)
+            logger.info("Training finished.")
 
-        _, loss_after = model(xb, yb)
-        print(f"Post-training loss: {loss_after:.4f}")
-        logger.info(f"Post-training loss: {loss_after:.4f}")
+            try: # Load the best model saved during training for subsequent evaluations
+                model.load_state_dict(torch.load("transformer_checkpoint_wordseq.pt", map_location=DEVICE))
+                logger.info("Loaded best model from checkpoint for final evaluations.")
+            except FileNotFoundError:
+                logger.warning("Checkpoint file not found after training. Using current model state for evaluations.")
+            except Exception as e:
+                logger.error(f"Error loading checkpoint: {e}", exc_info=True)
 
-        x_test, y_test = prep.get_batch("test")
-        _, test_loss = model(x_test, y_test)
-        print(f"Test set loss: {test_loss:.4f}")
-        logger.info(f"Test set loss: {test_loss:.4f}")
+        # --- Post-Training Evaluation on a sample training batch ---
+        if 'xb' in locals() and 'yb' in locals(): # Check if xb, yb were successfully created
+            _, loss_after = model(xb, yb) 
+            logger.info(f"Post-training loss (on one sample train batch): {loss_after.item():.4f}")
+            print(f"Post-training loss (on one sample train batch): {loss_after.item():.4f}")
 
-        prompt = 'Romeo'
-        input_ids = torch.tensor([prep.encoding(prompt)])
-        generated_ids = model.generate(input_ids, 20)
-        print("\nGenerated Text:\n" + prep.decoding(generated_ids[0].tolist()))
+        # --- Evaluate on Test Set ---
+        logger.info("Evaluating on test set...")
+        test_loss_avg = model.evaluate_validation_loss(prep, split='test', eval_iters=50) # Use more iters for test
+        # Evaluate the value and format it conditionally
+        if test_loss_avg is not None and not torch.isnan(torch.tensor(test_loss_avg)):
+            formatted_test_loss = f"{test_loss_avg:.4f}"
+        else:
+            formatted_test_loss = 'N/A'
 
-    except FileNotFoundError:
-        logger.critical("input.txt not found. Make sure the dataset is downloaded.")
+        logger.info(f"Average Test Set Loss: {formatted_test_loss}")
+        print(f"Average Test Set Loss: {formatted_test_loss}")
+
+        # --- Text Generation ---
+        logger.info("Generating text...")
+        prompt_text = 'Romeo, Romeo, wherefore art thou' # A classic prompt
+        input_ids = torch.tensor([prep.encode_string(prompt_text)], dtype=torch.long).to(DEVICE)
+        
+        generated_ids = model.generate(input_ids, max_tokens_ahead=50, temperature=0.7, top_k=40)
+        
+        generated_text = prep.decode_ids(generated_ids[0].cpu().tolist())
+        print(f"\n--- Generated Text (Prompt: '{prompt_text}') ---")
+        print(generated_text)
+        print("--- End of Generated Text ---")
+        logger.info(f"Generated text for prompt '{prompt_text}': {generated_text}")
+
+    except FileNotFoundError: # This specific catch might be redundant if path check at start exits
+        logger.critical(f"{input_file_path} (for TinyShakespeare) not found. Please ensure the dataset file exists.", exc_info=True)
+        print(f"CRITICAL ERROR: {input_file_path} (for TinyShakespeare) not found. Please ensure the dataset file exists in the correct location.")
     except ValueError as e:
-        logger.critical(f"Value error during training: {e}")
+        logger.critical(f"Value error during execution: {e}", exc_info=True)
+        print(f"Value error: {e}")
     except KeyError as e:
-        logger.critical(f"Key error encountered (likely in vocab mapping): {e}")
+        logger.critical(f"Key error encountered: {e}", exc_info=True)
+        print(f"Key error: {e}")
     except RuntimeError as e:
-        logger.critical(f"Runtime error (possibly tensor mismatch or CUDA error): {e}")
+        logger.critical(f"Runtime error: {e}", exc_info=True)
+        print(f"Runtime error: {e}")
+        if "CUDA out of memory" in str(e):
+            print("Hint: CUDA out of memory. Try reducing batch_size, context_window, or model size (channel_dim, num_layers).")
     except Exception as e:
-        logger.critical(f"Unhandled error in driver training code: {e}")
+        logger.critical(f"An unhandled error occurred in main execution: {e}", exc_info=True)
+        print(f"An unhandled error occurred: {e}")
         
     # == Optional: Hyperparameter Search Execution ==
     try:
-        should_tune = False
+        should_tune = False # Set to True to run hyperparameter search
         if should_tune:
-            lrs = [1e-2, 5e-3]
-            batch_sizes = [4, 8]
-            time_steps = [8, 16]
-            tuning_results = hyperparameter_search(raw_text, lrs, batch_sizes, time_steps)
+            logger.info("Starting hyperparameter search...")
+            if 'raw_text' not in locals() or 'tokenizer' not in locals():
+                logger.error("raw_text or tokenizer not defined for hyperparameter search. Skipping.")
+                print("Error: raw_text or tokenizer not available for hyperparameter search.")
+            else:
+                lrs_tune = [1e-3, 5e-4]
+                batch_sizes_tune = [8, 16]
+                time_steps_param_tune = [32, 64]
+                
+                tuning_results = hyperparameter_search(
+                    raw_text, 
+                    tokenizer, 
+                    lrs=lrs_tune, 
+                    batch_sizes=batch_sizes_tune, 
+                    time_steps_list=time_steps_param_tune
+                )
 
-            sorted_results = sorted(tuning_results, key=lambda x: x['val_loss'])
-            print("\nTop 3 Hyperparameter Configurations:")
-            for config in sorted_results[:3]:
-                print(config)
+                if tuning_results:
+                    # Filter out None val_loss results before sorting
+                    valid_tuning_results = [r for r in tuning_results if r['val_loss'] is not None and not torch.isnan(torch.tensor(r['val_loss']))]
+                    if valid_tuning_results:
+                        sorted_results = sorted(valid_tuning_results, key=lambda x: x['val_loss'])
+                        print("\n--- Top Hyperparameter Configurations ---")
+                        for config in sorted_results[:3]:
+                            print(f"Val Loss: {config['val_loss']:.4f} | Batch: {config['batch_size']}, Context: {config['time_steps']}, LR: {config['learning_rate']}")
+                        logger.info("Hyperparameter search completed.")
+                    else:
+                        print("\nNo valid results from hyperparameter search to display.")
+                        logger.info("Hyperparameter search yielded no valid (non-NaN) results.")
+                else:
+                    print("\nNo results from hyperparameter search.")
+                    logger.info("Hyperparameter search yielded no results.")
     except Exception as e:
-        logger.critical(f"Unhandled error during hyperparameter tuning: {e}")
+        logger.critical(f"Unhandled error during hyperparameter tuning: {e}", exc_info=True)
+        print(f"Error during hyperparameter tuning: {e}")
 
         
