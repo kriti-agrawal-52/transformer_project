@@ -72,11 +72,14 @@ The model is trained using **mini-batch stochastic gradient descent**.
 
 ### **Mini-Batch Stochastic Gradient Descent (SGD)**
 
-Mini-batch SGD is a training optimization method where the model's parameters are updated using a small, randomly selected subset (a "mini-batch") of the training data in each iteration, rather than the entire dataset.
+Mini-batch SGD is a training optimization method where the model's parameters are updated using a small, randomly selected subset (a "mini-batch") of the training data in each iteration/step, rather than the entire dataset.
 
 - **Why it's okay**: Using mini-batches is computationally more efficient than processing the entire dataset at once, especially for large datasets. It also introduces some noise into the gradient estimation, which can help the model escape shallow local minima and generalize better.
 - **In this architecture**: For each step within the training loop, one mini-batch of data is fed to the model. The gradients are computed and the model's weights are updated based on this single batch, and this process repeats for a specified number of steps or until convergence.
 - **Loss Curve Behavior**: Due to the varying gradients from different mini-batches, the training loss curve often appears "zig-zag" or noisy rather than perfectly smooth.
+- **Training Step/Iteration**: One single update of the model's parameters.
+- **Epoch**: An epoch is defined as one complete pass through the entire training dataset. If your training dataset has N samples and your batch size is B, then one epoch consists of N / B training steps typically.
+- **Random Sampling Effect**: When get_batch_indices uses torch.randint to pick random starting points for your sequences, it's entirely possible for some sequences to be picked multiple times within what would conceptually be one epoch, while others might not be picked at all. This is the nature of random sampling with replacement. However random sampling allows for continuous training without needing to pre-process or shuffle the entire dataset for each "epoch." Over many thousands or millions of training steps, even with random sampling, it's highly probable that most, if not all, of the training data will be exposed to the model multiple times.
 
 ### **Code Structure**
 
