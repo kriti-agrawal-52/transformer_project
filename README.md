@@ -95,3 +95,55 @@ Mini-batch SGD is a training optimization method where the model's parameters ar
 
 - **`hyperparameter_search` Function**:
   - An optional utility to systematically evaluate different combinations of learning rates, batch sizes, and context window lengths to find optimal configurations for the model.
+
+## **Multi-Head, Multi-Layer Transformer Language Model**
+
+This repository showcases a more advanced character-level Transformer model, incorporating multiple attention heads and stacked Transformer layers. It demonstrates a scaled-up architecture for improved context understanding and next-character prediction.
+
+### **Model Architecture**
+
+This Transformer model predicts the next character by learning complex dependencies across the input sequence.
+
+- **Embedding Layers**: The model starts by combining `token embeddings` (character-to-vector mapping) and `positional embeddings` (encoding character position) to provide initial rich representations.
+- **Multi-Head Attention (MHA)**: Instead of a single attention mechanism, MHA allows the model to jointly attend to information from different representation subspaces at different positions. It concatenates outputs from multiple "heads," each focusing on a different aspect of the input, leading to a richer context.
+  - **Shared Linear Projections**: `Query (Q)`, `Key (K)`, and `Value (V)` are created using shared linear layers across all heads for efficiency, and then reshaped to distribute into separate heads.
+  - **Scaled Dot-Product Attention**: Each head performs scaled dot-product attention, applying a `causal mask` to ensure predictions are based only on preceding characters.
+- **Transformer Block**: Each block consists of a Multi-Head Attention layer followed by a `Feed-Forward Network (FFN)`. Both layers are wrapped with `Layer Normalization` and `Residual Connections` to stabilize training and enable deeper networks.
+- **Stacked Transformer Blocks**: The model uses multiple `Transformer Blocks` stacked sequentially, allowing for hierarchical feature extraction and deeper understanding of context.
+- **Projection Layer**: A final linear layer projects the output of the Transformer stack to `logits` over the vocabulary, representing the model's predictions for the next character.
+
+### **Training Method**
+
+The model is trained using **mini-batch stochastic gradient descent**.
+
+- **Batching**: Random mini-batches of input and target sequences are used for each training step.
+- **Optimizer**: The `Adam` optimizer is employed to update the model's parameters.
+- **Loss Function**: `Cross-entropy loss` quantifies the difference between predicted and actual next characters.
+- **Regularization**: Training incorporates **checkpointing** (saving the best model based on validation loss) and **early stopping** (halting training if validation loss plateaus) to prevent overfitting and optimize resource usage.
+- **Loss Curve Behavior**: Due to the varying gradients from different mini-batches, the training loss curve often appears "zig-zag" or noisy rather than perfectly smooth.
+
+### **Code Structure**
+
+- **`PreprocessingTraining` Class**:
+
+  - Handles dataset loading, character-to-integer mapping (tokenization), and splitting data into training, validation, and test sets.
+  - Provides functionality to generate random mini-batches for model input.
+
+- **`MultiHeadAttention` Class**:
+
+  - Defines the multi-head self-attention mechanism, including linear projections for Q, K, V, scaling, causal masking, and combining attention outputs from multiple heads.
+
+- **`TransformerBlock` Class**:
+
+  - Encapsulates a single layer of the Transformer architecture, combining a `MultiHeadAttention` layer and a `Feed-Forward Network` with `Layer Normalization` and `Residual Connections`.
+
+- **`TransformerModel` Class**:
+
+  - Defines the complete Transformer network by composing token and positional embeddings, a stack of `TransformerBlock` instances, and the final output projection.
+  - The `forward` method performs the full pass through the network, returning logits and loss.
+  - The `generate` method enables autoregressive text generation.
+  - The `evaluate_validation_loss` method assesses performance on the validation set.
+  - The `train_loop` method orchestrates the entire training process, including optimization, logging, checkpointing, early stopping, and plotting loss curves. This class is responsible for running the training.
+
+- **`hyperparameter_search` Function**:
+  - An optional utility to systematically evaluate different combinations of learning rates, batch sizes, and context window lengths to identify optimal training configurations.
