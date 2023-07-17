@@ -214,15 +214,17 @@ Mini-batch SGD is a training optimization method where the model's parameters ar
 - **`MultiHeadAttention` Class**:
 
   - Defines the multi-head self-attention mechanism, including linear projections for Q, K, V, scaling, causal masking, and combining attention outputs from multiple heads.
+  - It doesn't directly interact with `PreprocessingTraining` or `TransformerModel` initially, but rather, an instance of `MultiHeadAttention` is _contained within_ each `TransformerBlock`.
 
 - **`TransformerBlock` Class**:
 
   - Encapsulates a single layer of the Transformer architecture, combining a `MultiHeadAttention` layer and a `Feed-Forward Network` with `Layer Normalization` and `Residual Connections`.
+  - Each `TransformerBlock` instance _uses_ a `MultiHeadAttention` instance internally, along with a feed-forward network, layer normalization, and residual connections. The `TransformerModel` then stacks multiple `TransformerBlock` instances.
 
 - **`TransformerModel` Class**:
 
   - Defines the complete Transformer network by composing token and positional embeddings, a stack of `TransformerBlock` instances, and the final output projection.
-  - The `forward` method performs the full pass through the network, returning logits and loss.
+  - The `forward` method performs the full pass through the network, returning logits and loss. During its `forward` pass, it sequentially _calls_ the `forward` method of each `TransformerBlock` to process the input.
   - The `generate` method enables autoregressive text generation with `top-k sampling` and `temperature scaling`.
   - The `evaluate_validation_loss` method assesses performance on the validation set using `eval_iters`.
   - The `train_loop` method orchestrates the entire training process, including optimization, logging, checkpointing, early stopping, and plotting loss curves, running for `train_iters`. This class is responsible for running the training.
