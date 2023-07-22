@@ -1,2 +1,0 @@
-2025-05-19 19:22:55,661 - INFO - Successfully loaded input.txt
-2025-05-19 19:22:57,606 - CRITICAL - Runtime error (possibly tensor mismatch or CUDA error): stack expects each tensor to be equal size, but got [22] at entry 0 and [21] at entry 1
